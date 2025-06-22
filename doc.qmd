@@ -1,0 +1,622 @@
+---
+title: "Ordinal treatment effect of mechanical thrombectomy"
+author: "Bradley Kolb"
+format: html
+embed-resources: true
+editor: visual
+fig-format: png
+fig-dpi: 300
+execute: 
+  echo: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+Comprehensive evaluation of randomized evidence for mechanical thrombectomy using bayesian implementation of random effects meta-analysis with ordinal data in `stan` using `brms`.
+
+# Dependencies
+
+```{r libraries}
+#| echo: TRUE
+suppressMessages({
+  library(tidyverse)
+  library(brms)
+  library(posterior)
+  library(here)
+  library(tinytable)
+})
+```
+
+# Data
+
+```{r set up data}
+
+data <- read.csv(here("data.csv")) %>% 
+  as_tibble() %>% 
+  mutate(treatment = case_when(
+    treatment == 1 ~ "thrombectomy",
+    treatment == 0 ~ "medical"))
+
+data$treatment <- factor(data$treatment)
+data$trial <- factor(data$trial)
+
+data_long <- data %>%
+  pivot_longer(
+    cols = -c(trial, year, treatment),
+    names_to = "ordinal_value", 
+    values_to = "count"
+  ) %>% 
+  uncount(count) %>%
+  arrange(treatment, ordinal_value) %>% 
+  mutate(ordinal_value = case_when(
+    ordinal_value == "zero" ~ 0,
+    ordinal_value == "one" ~ 1, 
+    ordinal_value == "two" ~ 2,
+    ordinal_value == "three" ~ 3,
+    ordinal_value == "four" ~ 4,
+    ordinal_value == "five" ~ 5,
+    ordinal_value == "six" ~ 6
+  ))
+```
+
+```{r}
+#| label: tbl-data
+#| tbl-cap: Observed mRS outcomes in 27 thrombectomy RCTs
+
+df <- data_long %>%
+  group_by(ordinal_value, treatment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = ordinal_value, values_from = count)
+
+n <- "Intention-to-treat populations at 90 days."
+
+m <- "Recommended health state terms for mRS levels: 0 = normal, 1 = sympotmatic but not disabled, 2 = disabled but independent, 3 = dependent but ambulatory, 4 = not ambulatory nor capable of bodily self-care, 5 = requires constant care, 6 = dead."
+
+o <- "Recommended valence terms for mRS levels: 0 = ideal, 1 = excellent, 2 = good, 3 = fair, 4 = poor, 5 = very poor."
+
+
+df %>% 
+  tt(digits = 2, 
+     notes = list(a = n, b = m, c = o)) %>% 
+  group_tt(j = list("mRS score" = 2:8))
+```
+
+```{r}
+#| label: tbl-cum
+#| tbl-cap: Cumulative proportions of mRS outcomes in 27 thrombectomy RCTs
+
+df <- data_long %>%
+  group_by(ordinal_value, treatment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = ordinal_value, values_from = count) %>%
+  rowwise() %>%
+  mutate(
+    total = sum(c_across(`0`:`6`)),
+    cum0 = sum(c_across(`0`)) / total,
+    cum1 = sum(c_across(`0`:`1`)) / total,
+    cum2 = sum(c_across(`0`:`2`)) / total,
+    cum3 = sum(c_across(`0`:`3`)) / total,
+    cum4 = sum(c_across(`0`:`4`)) / total,
+    cum5 = sum(c_across(`0`:`5`)) / total,
+    cum6 = sum(c_across(`0`:`6`)) / total
+    ) %>% 
+  select(treatment, cum0:cum6) %>%
+  rename_with(~ gsub("cum", "", .x), starts_with("cum")) %>%
+  ungroup() 
+
+
+
+df %>% 
+  tt(digits = 2) %>% 
+  group_tt(j = list("mRS score" = 2:8))
+```
+
+```{r}
+#| label: fig-cum
+#| fig-cap: Cumulative proportion of observed results in 27 thrombectomy RCTs on the modified Rankin scale. The cumulative proportion is the percentage of all scores that are less than or equal to the given score. 
+
+
+df <- data_long %>%
+  group_by(ordinal_value, treatment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = ordinal_value, values_from = count) %>%
+  rowwise() %>%
+  mutate(
+    total = sum(c_across(`0`:`6`)),
+    cum0 = sum(c_across(`0`)) / total,
+    cum1 = sum(c_across(`0`:`1`)) / total,
+    cum2 = sum(c_across(`0`:`2`)) / total,
+    cum3 = sum(c_across(`0`:`3`)) / total,
+    cum4 = sum(c_across(`0`:`4`)) / total,
+    cum5 = sum(c_across(`0`:`5`)) / total,
+    cum6 = sum(c_across(`0`:`6`)) / total
+    ) %>% 
+  select(treatment, cum0:cum6) %>%
+  rename_with(~ gsub("cum", "", .x), starts_with("cum")) %>%
+  ungroup() 
+
+df <- df %>%
+  pivot_longer(cols = -treatment, names_to = "score", values_to = "cumulative_proportion") %>%
+  mutate(score = as.numeric(score))
+
+ggplot(df, aes(x = score, y = cumulative_proportion, color = treatment, shape = treatment, linetype = treatment)) +
+  geom_line(size = 1) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = 0:6, name = "Modified Rankin Score") +
+  scale_shape_manual(values = c("medical" = 19, "thrombectomy" = 19)) +  # triangle and solid circle
+  scale_linetype_manual(values = c("medical" = "dashed", "thrombectomy" = "solid")) +
+  scale_color_manual(values = c("medical" = "#ff7f0e", "thrombectomy" = "#1f77b4")) +
+  ylab("Cumulative Proportion") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none"
+  ) +
+  annotate("text", x = 1, y = 0.5, label = "Mechanical\n thrombectomy", hjust = 0, size = 4) +
+  annotate("text", x = 2, y = 0.2, label = "Medical\n care", hjust = 0, size = 4)
+```
+
+```{r}
+#| label: fig-cumtrial
+#| fig-cap: Per-trial cumulative proportion of observed results in 27 thrombectomy RCTs on the modified Rankin scale. 
+
+df <- data_long %>%
+  mutate(trial = fct_reorder(trial, year)) %>%
+  group_by(trial, ordinal_value, treatment) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = ordinal_value, values_from = count) %>%
+  rowwise() %>%
+  replace(is.na(.), 0) %>% 
+  mutate(
+    total = sum(c_across(`0`:`6`)),
+    cum0 = sum(c_across(`0`)) / total,
+    cum1 = sum(c_across(`0`:`1`)) / total,
+    cum2 = sum(c_across(`0`:`2`)) / total,
+    cum3 = sum(c_across(`0`:`3`)) / total,
+    cum4 = sum(c_across(`0`:`4`)) / total,
+    cum5 = sum(c_across(`0`:`5`)) / total,
+    cum6 = sum(c_across(`0`:`6`)) / total
+  ) %>% 
+  select(trial, treatment, cum0:cum6) %>%
+  rename_with(~ gsub("cum", "", .x), starts_with("cum")) %>%
+  ungroup() 
+
+df <- df %>%
+  pivot_longer(cols = -c(trial, treatment), names_to = "score", values_to = "cumulative_proportion") %>%
+  mutate(score = as.numeric(score))
+
+ggplot(df, aes(x = score, y = cumulative_proportion, color = treatment, 
+               shape = treatment, linetype = treatment)) +
+  facet_wrap(vars(trial), ncol = 7) +
+  geom_line(size = 0.5) +
+  geom_point(size = 0.5) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = 0:6, name = "Modified Rankin Score") +
+  scale_shape_manual(values = c("medical" = 19, "thrombectomy" = 19)) +  
+  scale_linetype_manual(values = c("medical" = "solid", "thrombectomy" = "solid")) +
+  scale_color_manual(values = c("medical" = "#ff7f0e", "thrombectomy" = "#1f77b4")) +
+  ylab("Cumulative Proportion") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none"
+  )
+```
+
+```{r}
+#| echo: false
+#| label: fig-trials
+#| fig-cap: Distribution of ordinal values by treatment group for all thrombectomy RCTs
+
+data_long %>%
+  count(trial, treatment, year, ordinal_value) %>%
+  group_by(trial, treatment, year) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup() %>% 
+  # Reorder trial levels by ascending year
+  mutate(trial = fct_reorder(trial, year)) %>%
+  ggplot(aes(x = ordinal_value, y = proportion, fill = treatment)) +
+  facet_wrap(vars(trial), ncol = 7) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  scale_fill_manual(values = c("medical" = "#ff7f0e", "thrombectomy" = "#1f77b4")) +
+  scale_x_continuous(breaks = 0:6) +
+  labs(
+    x = "modified Rankin score at six months",
+    y = "proportion",
+    fill = "treatment"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+```
+
+# Model
+
+```{r import model fit}
+model <- readRDS(here("model.rds"))
+
+summary(model)
+```
+
+# Results
+
+## Average treatment effect
+
+```{r arrange results}
+# extract the trial-specific coefficients
+trial_coefs <- coef(model, summary = FALSE)$trial[, , "treatmentthrombectomy"] %>%
+  posterior_summary() %>%
+  as_tibble(rownames = "trial") %>%
+  # sort by Estimate value
+  arrange(Estimate) %>%
+  # convert trial to a factor with levels in the sorted order
+  mutate(trial = factor(trial, levels = trial))
+
+# extract the population-level coefficient 
+pop_coef <- fixef(model) %>%
+  as_tibble(rownames = "Parameter") %>%
+  filter(Parameter == "treatmentthrombectomy") %>%
+  mutate(trial = "Average")
+
+# get posterior draws for predictive interval
+treatment_col <- as_draws_df(model, variable = "b_treatmentthrombectomy")
+sigma_col <- as_draws_df(model, variable = "sd_trial__treatmentthrombectomy")
+
+pred_draws <- treatment_col[[1]] + rnorm(4e3, 0, sigma_col[[1]])
+
+# calculate summary statistics for the predictive interval
+pred_summary <- tibble(
+  Estimate = mean(pred_draws),
+  Q2.5 = quantile(pred_draws, 0.025),
+  Q97.5 = quantile(pred_draws, 0.975),
+  trial = "Predictive"
+)
+
+# combine all coefficients
+all_coefs <- bind_rows(trial_coefs, pop_coef, pred_summary) %>%
+  mutate(trial = factor(
+    trial, levels = c(levels(trial_coefs$trial), "Average", "Predictive"))
+  ) %>% 
+  select(-Parameter)
+
+trial_years <- c(
+  "angel" = 2023,
+  "attention" = 2022,
+  "baoche" = 2022,
+  "basics" = 2021,
+  "best" = 2020,
+  "dawn" = 2018,
+  "defuse3" = 2018,
+  "distal" = 2025,
+  "escape" = 2015,
+  "escapemevo" = 2025,
+  "extendia" = 2015,
+  "ims3" = 2013,
+  "mrclean" = 2015,
+  "mrcleanlate" = 2023,
+  "mrrescue" = 2013,
+  "piste" = 2017, 
+  "positive" = 2022,
+  "rescuejapan" = 2022,
+  "resilient" = 2020,
+  "revascat" = 2015,
+  "select2" = 2023,
+  "swiftprime" = 2015, 
+  "synthesis" = 2013,
+  "tension" = 2023,
+  "tesla" = 2024,
+  "therapy" = 2016,
+  "thrace" = 2016,
+  "Average" = 3000,
+  "Predictive" = 3001
+)
+
+# assign a 'year' column
+all_coefs <- all_coefs %>%
+  mutate(year = trial_years[as.character(trial)])  
+
+all_coefs <- all_coefs %>%
+  mutate(trial = factor(trial,
+                        levels = names(sort(trial_years, decreasing = TRUE))))
+```
+
+```{r average treatment effect}
+#| label: tbl-ate
+#| tbl-cap: Average treatment effect from 27 thrombectomy RCTs, log odds scale. The average treatment effect is the mean of the distribution of true treatment effects. 
+df <- all_coefs %>% 
+  filter(trial == "Average") %>% 
+  select(c(Estimate, Q2.5, Q97.5))
+
+df <- bind_rows(
+  df %>% mutate(type = "log"),
+  df %>% mutate(across(everything(), exp), type = "exp"),
+  df %>% 
+    mutate(across(everything(), ~ (exp(.) - 1) * 100)) %>% 
+    mutate(type = "percent")
+)
+
+df %>% 
+  tt(digits = 2) 
+```
+
+```{r predicted treatment effect}
+#| label: tbl-pte
+#| tbl-cap: Predicted treatment effect from 27 thrombectomy RCTs. The predicted treatment effect is the distribution of true treatment effects. 
+df <- all_coefs %>% 
+  filter(trial == "Predictive") %>% 
+  select(c(Estimate, Q2.5, Q97.5))
+
+df <- bind_rows(
+  df %>% mutate(type = "log"),
+  df %>% mutate(across(everything(), exp), type = "exp"),
+  df %>% 
+    mutate(across(everything(), ~ (exp(.) - 1) * 100)) %>% 
+    mutate(type = "percent")
+)
+
+df %>% 
+  tt(digits = 2) 
+```
+
+```{r forest plot}
+#| label: fig-forest
+#| fig-cap: Forest plot of treatment effect estimates from 27 randomized trials of thrombectomy. Estimates for each trial (black) represent the posterior mean and 95% credible interval of the true treatment effect in each trial. The average treatment effect (red) represents the posterior mean and 95% credible interval for the distribution of true treatment effects. The predicted treatment effect (blue) represents the mean and 95% credible interval for the posterior predictive distribution of true treatment effects. All estimates are common odds ratios on the log scale, with 0 corresponding to "no effect," positive numbers corresponding to "positive effect," and negative numbers corresponding to "negative effect."
+
+ggplot(all_coefs, aes(trial, Estimate, ymin = Q2.5, ymax = Q97.5)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(x = "Trial", y = "Common Odds Ratio") +
+  theme_classic() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  # Add the highlight rectangle for Overall/Predictive
+  geom_rect(data = subset(all_coefs, trial %in% c("Average", "Predictive")),
+            aes(xmin = as.numeric(trial) - 0.5, 
+                xmax = as.numeric(trial) + 0.5,
+                ymin = -Inf, ymax = Inf),
+            fill = "lightgrey", alpha = 0.3) +
+  # Larger, red point for Overall
+  geom_pointrange(data = subset(all_coefs, trial == "Average"),
+                  size = 0.5, color = "red") +
+  # Larger, blue (dashed) point for Predictive
+  geom_pointrange(data = subset(all_coefs, trial == "Predictive"),
+                  size = 0.5, color = "blue", linetype = "dashed")
+```
+
+## Treatment effect heterogeneity
+
+```{r}
+#| label: tbl-sd
+#| tbl-cap: Control group and treatment effect heterogeneity. Treatment effect heterogeneity is the standard deviation of the distribution of true treatment effects. Control group heterogeneity is the standard deviation of the distribution of true control group outcomes.
+vars <- c("sd_trial__Intercept", "sd_trial__treatmentthrombectomy")
+
+sds <- as_draws_df(model, variable = vars) %>% 
+  pivot_longer(cols = vars, 
+               names_to = "parameter") %>% 
+  select(parameter, value) %>% 
+  mutate(
+    parameter = replace(
+      parameter, parameter != "sd_trial__Intercept", "treatment effect")) %>% 
+  mutate(
+    parameter = replace(
+      parameter, parameter != "treatment effect", "control"))
+
+sds %>% 
+  group_by(parameter) %>% 
+  summarise(estimate = mean(value),
+            'Q2.5' = quantile(value, probs = .025),
+            'Q97.5' = quantile(value, probs = .975)
+            ) %>% 
+  tt(digits = 2)
+```
+
+```{r}
+#| label: fig-sd
+#| fig-cap: Comparison of control group and treatment effect heterogeneity. Treatment effect heterogeneity is the standard deviation of the distribution of true treatment effects. Control group heterogeneity is the standard deviation of the distribution of true control group outcomes.
+#| 
+
+sds %>% 
+  ggplot(aes(fill = parameter, color = parameter, x = value)) +
+  ggdist::stat_slab(alpha = 0.3) +
+  ggdist::stat_pointinterval(position = position_dodge(width = 0.4, preserve = "single")) +
+  labs(y = NULL) +
+  scale_y_continuous(breaks = NULL) +
+  theme_bw() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(values = c("control" = "#ff7f0e", "treatment effect" = "#1f77b4")) +
+  scale_fill_manual(values = c("control" = "#ff7f0e", "treatment effect" = "#1f77b4"))
+```
+
+## Treatment effect modification
+
+```{r}
+#| label: tbl-corr
+#| tbl-cap: Correlation between baseline outcome and treatment effect.
+vars <- c("cor_trial__Intercept__treatmentthrombectomy")
+
+corr <- as_draws_df(model, variable = vars) %>% 
+  pivot_longer(cols = vars,
+               names_to = "parameter") %>% 
+  select(parameter, value)
+
+corr %>% 
+  group_by(parameter) %>% 
+  summarise(estimate = mean(value),
+            'Q2.5' = quantile(value, probs = .025),
+            'Q97.5' = quantile(value, probs = .975)
+            ) %>% 
+  mutate(parameter = c("correlation")) %>% 
+  tt(digits = 2)
+```
+
+```{r}
+#| label: fig-corr
+#| fig-cap: Correlation between baseline outcome and treatment effect. Correlation is measured on a scale between -1 and +1, with zero representing "no correlation."
+
+corr %>% 
+  ggplot(aes(fill = parameter, color = parameter, x = value)) +
+  ggdist::stat_slab(alpha = 0.3) +
+  ggdist::stat_pointinterval(position = position_dodge(width = 0.4, preserve = "single")) +
+  labs(y = NULL) +
+  scale_y_continuous(breaks = NULL) +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: fig-scatter
+#| fig-cap: Correlation between baseline prognosis and treatment effect in 27 thrombectomy RCTs. Each point represents the trial-specific deviation in baseline log-odds for the control group (x-axis) and the trial-specific deviation from the average treatment effect of thrombectomy (y-axis). Trials with worse baseline prognosis (more negative x-axis values) tended to show larger positive effects from thrombectomy (more positive y-axis values), as depicted by the dashed line of best fit. 
+
+coefs <- ranef(model)$trial[, , c("Intercept", "treatmentthrombectomy")] %>%
+  as_tibble(rownames = "trial") %>%
+  rename(
+    intercept = `Estimate.Intercept`,
+    slope = `Estimate.treatmentthrombectomy`
+  )
+
+ggplot(coefs, aes(x = intercept, y = slope)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  labs(
+    x = "Trial-specific intercept",
+    y = "Trial-specific slope"
+  ) +
+  theme_bw()
+```
+
+## Conditional effects
+
+```{r wrangle conditional effects}
+
+# trial level 
+df_trial <- expand.grid(
+  trial     = unique(data_long$trial),
+  treatment = c("medical", "thrombectomy")
+)
+
+post_all <- posterior_epred(model, newdata = df_trial, re_formula = NULL)
+# dimensions of returned array: S x N x C
+#    S = posterior draws
+#    N = number of rows in df_trial
+#    C = number of ordinal categories
+
+# add index
+df_trial <- df_trial %>% mutate(row_index = row_number())
+
+df_pairs <- df_trial %>%
+  group_by(trial) %>%
+  summarize(
+    med_idx = row_index[treatment == "medical"],
+    thr_idx = row_index[treatment == "thrombectomy"]
+  ) %>%
+  ungroup()
+
+all_diffs <- vector("list", nrow(df_pairs))
+
+for (i in seq_len(nrow(df_pairs))) {
+  
+  idx_med <- df_pairs$med_idx[i]
+  idx_thr <- df_pairs$thr_idx[i]
+  
+  # diff_mat is S x C
+  diff_mat <- post_all[, idx_thr, ] - post_all[, idx_med, ]
+  
+  diff_mat <- diff_mat[, 7:1]
+  
+  diff_summary <- apply(diff_mat, 2, function(x) {
+    c(mean = mean(x),
+      lower = quantile(x, 0.025),
+      upper = quantile(x, 0.975))
+  })
+  
+  df_i <- data.frame(
+    trial = df_pairs$trial[i],
+    # shift category from 1..7 to 0..6 for typical mRS labeling
+    category = factor(0:6),
+    diff_mean  = diff_summary[1, ],
+    diff_lower = diff_summary[2, ],
+    diff_upper = diff_summary[3, ]
+  )
+  
+  all_diffs[[i]] <- df_i
+}
+
+df_final <- do.call(rbind, all_diffs)
+
+# population level
+df_overall <- data.frame(treatment = c("medical", "thrombectomy"))
+post_overall <- posterior_epred(model, newdata = df_overall, re_formula = NA)
+
+diff_mat_overall <- post_overall[, 2, ] - post_overall[, 1, ]
+
+diff_mat_overall <- diff_mat_overall[, 7:1]
+
+diff_summary_overall <- apply(diff_mat_overall, 2, function(x) {
+  c(mean = mean(x),
+    lower = quantile(x, 0.025),
+    upper = quantile(x, 0.975))
+})
+
+df_overall_final <- data.frame(
+  trial = "Average",
+  category = factor(0:6),
+  diff_mean  = diff_summary_overall[1, ],
+  diff_lower = diff_summary_overall[2, ],
+  diff_upper = diff_summary_overall[3, ]
+)
+
+# combine
+df_plot <- bind_rows(df_final, df_overall_final)
+
+
+df_plot <- df_plot %>%
+  mutate(year = trial_years[trial])
+
+df_plot <- df_plot %>%
+  mutate(trial = reorder(trial, year))
+```
+
+```{r}
+#| label: fig-conditionaleffects
+#| fig-cap: Conditional effects of thrombectomy
+ggplot(df_plot, aes(x = category, y = diff_mean)) +
+  geom_point(size = 0.5) +
+  geom_linerange(aes(ymin = diff_lower, ymax = diff_upper)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  facet_wrap(~ trial, ncol = 7) +
+  labs(
+    x = "mRS Category",
+    y = "Probability"
+  ) +
+  theme_bw()
+```
+
+```{r}
+#| label: tbl-avgconditionaleffects
+#| tbl-cap: Average conditional effects of thrombectomy
+#| 
+df_overall_final %>% 
+  mutate(estimate = diff_mean,
+         'Q2.5' = diff_lower,
+         'Q97.5' = diff_upper) %>% 
+  select(category, estimate, 'Q2.5','Q97.5') %>% 
+  tt(digits = 2)
+```
+
+```{r}
+#| label: fig-avgconditionaleffects
+#| fig-cap: Average conditional effects of thrombectomy
+ggplot(df_overall_final, aes(x = category, y = diff_mean)) +
+  geom_point(size = 1) +
+  geom_linerange(aes(ymin = diff_lower, ymax = diff_upper)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  facet_wrap(~ trial) +
+  labs(
+    x = "mRS Category",
+    y = "Probability"
+  ) +
+  theme_bw()
+```
